@@ -3,5 +3,5 @@ PWD = $(shell pwd)
 run-etcd:
 	etcd
 
-run-cron:
-	go run ./main.go start
+run-elector:
+	go run ./main.go run-elector

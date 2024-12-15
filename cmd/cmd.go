@@ -1,54 +1,67 @@
 package cmd
 
 import (
+	"distributed-cron-job/internal/elector"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	elector "github.com/go-co-op/gocron-etcd-elector"
 	"github.com/go-co-op/gocron/v2"
-
 	"github.com/spf13/cobra"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
+	"golang.org/x/net/context"
 )
 
 func New() *cobra.Command {
 	cli := &cobra.Command{}
 
 	cli.AddCommand(&cobra.Command{
-		Use:   "start",
-		Short: "start cron job",
-		Long:  "start cron job",
+		Use:   "run-elector",
+		Short: "run a distributed cron job using leader election",
+		Long:  "run a distributed cron job using leader election",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := elector.Config{
+
+			config := clientv3.Config{
 				Endpoints:   []string{"http://localhost:2379"},
-				DialTimeout: 3 * time.Second,
+				DialTimeout: 5 * time.Second,
 			}
 
-			el, err := elector.NewElector(cmd.Context(), cfg, elector.WithTTL(10))
+			client, err := clientv3.New(config)
 			if err != nil {
 				return err
 			}
+			defer client.Close()
 
-			log.Printf("Elector ID: %v", el.GetID())
+			session, err := concurrency.NewSession(client, concurrency.WithTTL(10))
+			if err != nil {
+				return err
+			}
+			defer session.Close()
 
-			go func() {
-				if err := el.Start("/distributed-cron-job/elector"); err == elector.ErrClosed {
-					log.Fatalf("Elector closed: %v", err)
-				}
-			}()
+			election := concurrency.NewElection(session, "/distributed-cron-job/elector")
+			elector := elector.NewElector(election)
 
-			sh, err := gocron.NewScheduler(gocron.WithDistributedElector(el))
+			log.Printf("starting elector: %s", elector.GetID().String())
+
+			ctx, cancel := context.WithCancel(cmd.Context())
+			errCh := make(chan error, 1)
+			ticker := time.NewTicker(time.Second)
+
+			go elector.CampaignLoop(ctx, ticker, errCh)
+
+			sh, err := gocron.NewScheduler(gocron.WithDistributedElector(elector))
 			if err != nil {
 				return err
 			}
 
 			if _, err := sh.NewJob(
-				gocron.DurationJob(1*time.Second),
+				gocron.DurationJob(5*time.Second),
 				gocron.NewTask(
 					func() {
-						log.Printf("Current Leader: %v", el.GetLeaderID())
+						log.Printf("current leader: %v", elector.GetID())
 					},
 				),
 			); err != nil {
@@ -56,12 +69,19 @@ func New() *cobra.Command {
 			}
 
 			sh.Start()
+			defer sh.Shutdown()
 
 			c := make(chan os.Signal, 1)
 			signal.Notify(c, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
-			<-c
 
-			return nil
+			select {
+			case <-c:
+				cancel()
+				return nil
+			case err := <-errCh:
+				log.Printf("error: %v", err)
+				return nil
+			}
 		},
 	})
 
