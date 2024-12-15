@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"distributed-cron-job/internal/elector"
 	"log"
 	"os"
@@ -12,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
-	"golang.org/x/net/context"
 )
 
 func New() *cobra.Command {
@@ -23,7 +23,6 @@ func New() *cobra.Command {
 		Short: "run a distributed cron job using leader election",
 		Long:  "run a distributed cron job using leader election",
 		RunE: func(cmd *cobra.Command, args []string) error {
-
 			config := clientv3.Config{
 				Endpoints:   []string{"http://localhost:2379"},
 				DialTimeout: 5 * time.Second,
@@ -47,6 +46,8 @@ func New() *cobra.Command {
 			log.Printf("starting elector: %s", elector.GetID().String())
 
 			ctx, cancel := context.WithCancel(cmd.Context())
+			defer cancel()
+
 			errCh := make(chan error, 1)
 			ticker := time.NewTicker(time.Second)
 
@@ -76,7 +77,6 @@ func New() *cobra.Command {
 
 			select {
 			case <-c:
-				cancel()
 				return nil
 			case err := <-errCh:
 				log.Printf("error: %v", err)
