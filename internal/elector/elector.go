@@ -42,7 +42,7 @@ func (e *Elector) IsLeader(ctx context.Context) error {
 	}
 
 	for _, kv := range response.Kvs {
-		value, err := uuid.Parse(string(kv.Value))
+		value, err := uuid.ParseBytes(kv.Value)
 		if err != nil {
 			continue
 		}
@@ -57,9 +57,9 @@ func (e *Elector) IsLeader(ctx context.Context) error {
 	return errors.New("the elector is not leader")
 }
 
-func NewElector(election *concurrency.Election) *Elector {
+func NewElector(session *concurrency.Session, pfx string) *Elector {
 	return &Elector{
 		id:       uuid.New(),
-		election: election,
+		election: concurrency.NewElection(session, pfx),
 	}
 }
